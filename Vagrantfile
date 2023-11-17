@@ -7,7 +7,7 @@ MEMORY = "8192"
 CPUs = 4
 DESIRED_VAGRANT_VERSION = "2.4.0"
 DESIRED_VAGRANT_FILE = "vagrant_#{DESIRED_VAGRANT_VERSION}-1_amd64.deb" 
-NETWORK_INTERFACE = "wlp" # if cable change the interface to "en0"
+NETWORK_INTERFACE = "wlp" # If you use a wired network, change the interface to "en0"
 GATEWAY_NETWORK = `ip route | awk '/default/ && $5 ~ /#{NETWORK_INTERFACE}/ {print $3}'`.strip
 
 unless system("which virtualbox")
