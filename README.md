@@ -102,7 +102,7 @@ gitignored `Vagrantfile.local`):
 
 | Variable | Default | Notes |
 | :--- | :--- | :--- |
-| `BOX_IMAGE` | `ubuntu/jammy64` | Base box. |
+| `BOX_IMAGE` | `cloud-image/ubuntu-24.04` | Base box. Canonical stopped publishing `ubuntu/*` boxes after jammy; this is the cloud-image repack. |
 | `PROJECT` | `dev-project` | Label mixed into `VM_NAME`. |
 | `CPUs` / `MEMORY` | `2` / `8192` | Cores / RAM (MB). |
 | `DISK_SIZE` | `50GB` | Grow on `vagrant reload`; shrink needs a rebuild. |
