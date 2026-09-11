@@ -135,8 +135,7 @@ targets this sandbox from *everywhere*.) Re-`source` the rc file afterwards.
 
 ## Commit conventions
 
-[Conventional Commits](https://www.conventionalcommits.org/pt-br/v1.0.0-beta.4/),
-enforced by `.githooks/commit-msg`:
+[Conventional Commits](https://www.conventionalcommits.org/pt-br/v1.0.0-beta.4/):
 
 * Subject `<type>(<scope>)?: <desc>` — ≤ 50 recommended, **72 hard limit**.
   Types: `build chore ci docs feat fix perf refactor revert style test`.
@@ -144,7 +143,9 @@ enforced by `.githooks/commit-msg`:
 * Body optional: blank line after the subject, lines wrapped at **72**.
 * No `Co-Authored-By:` trailer.
 
-Enable the hook once per clone: `git config core.hooksPath .githooks`
+Enforced by a global `commit-msg` hook (via `core.hooksPath`) managed in this
+maintainer's personal dotfiles, not tracked in this repo — no per-clone setup
+needed here.
 
 ## Repos & Git
 
