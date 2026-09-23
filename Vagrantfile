@@ -188,6 +188,8 @@ Vagrant.configure("2") do |config|
   config.vm.provider "virtualbox" do |vb|
     vb.memory = MEMORY
     vb.cpus   = CPUs
+    vb.customize ["modifyvm", :id, "--acpi", "on"]
+    vb.customize ["modifyvm", :id, "--ioapic", "on"]
     # Resolve DNS via the host resolver so the VM follows the host VPN DNS
     vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
   end
