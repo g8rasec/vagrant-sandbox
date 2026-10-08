@@ -104,6 +104,7 @@ gitignored `Vagrantfile.local`):
 | :--- | :--- | :--- |
 | `BOX_IMAGE` | `cloud-image/ubuntu-24.04` | Base box. Canonical stopped publishing `ubuntu/*` boxes after jammy; this is the cloud-image repack. |
 | `PROJECT` | `dev-project` | Label mixed into `VM_NAME`. |
+| `HOSTNAME` | `vm-<box distro>` | Guest hostname; override in `Vagrantfile.local` without changing `VM_NAME` or the existing VM identity. |
 | `CPUs` / `MEMORY` | `2` / `8192` | Cores / RAM (MB). |
 | `DISK_SIZE` | `50GB` | Grow on `vagrant reload`; shrink needs a rebuild. |
 | `USERNAME` / `PASSWORD` | `user` / `pass` | VM user. |

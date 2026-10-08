@@ -71,7 +71,7 @@ end
 # Derive names from the box's distro token, not its org (boxes are now
 # "<org>/<distro>", e.g. "cloud-image/ubuntu-24.04"). Non-alnum -> "-".
 BOX_TAG   = BOX_IMAGE.split("/").last.gsub(/[^A-Za-z0-9]+/, "-")
-HOSTNAME  = "vm-" + BOX_TAG
+HOSTNAME  = "vm-" + BOX_TAG unless defined?(HOSTNAME)
 VM_NAME   = ("vm-" + BOX_TAG + "-" + PROJECT).upcase
 
 VM_SSH_PUB_KEY  = read_ssh_key(SSH_KEY_FILENAME, true)
