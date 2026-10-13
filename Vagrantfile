@@ -186,6 +186,7 @@ Vagrant.configure("2") do |config|
 
   # VirtualBox Provider Settings
   config.vm.provider "virtualbox" do |vb|
+    vb.name   = VM_DISPLAY_NAME if defined?(VM_DISPLAY_NAME)
     vb.memory = MEMORY
     vb.cpus   = CPUs
     vb.customize ["modifyvm", :id, "--acpi", "on"]
