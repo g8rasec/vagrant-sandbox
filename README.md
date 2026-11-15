@@ -95,6 +95,71 @@ Host vm-ubuntu
     StrictHostKeyChecking accept-new
 ```
 
+## One VM per project
+
+Projects that each need the same ports (an ingress on `443`, a Kubernetes
+cluster) can't share a VM: whichever starts last takes the port. Give each
+project its own VM, with its own IP on the Host-Only network, and start only
+the ones you are testing.
+
+```mermaid
+flowchart LR
+  subgraph host["Host"]
+    B["Browser / IDE"]
+  end
+  subgraph net["Host-Only network 192.168.56.0/24"]
+    A["app-a VM<br/>192.168.56.11<br/>its own cluster, :443"]
+    C["app-b VM<br/>192.168.56.12<br/>its own stack, :443"]
+  end
+  B -- "https://app-a.test" --> A
+  B -- "https://app-b.test" --> C
+```
+
+Define `MACHINES` in `Vagrantfile.local`. The keys are the names used in
+commands; every option falls back to the constants of the `Vagrantfile`:
+
+```ruby
+MACHINES = {
+  "app-a" => { ip: "192.168.56.11", memory: "6144" },
+  "app-b" => { ip: "192.168.56.12", memory: "4096", hostname: "my-app-b" },
+}
+```
+
+| Option | Default |
+| :--- | :--- |
+| `ip` | `VM_PRIVATE_IP` (or `VM_BRIDGED_IP` in `"public_static"`); must be unique |
+| `hostname` | the machine name |
+| `display_name` | Vagrant default |
+| `cpus` / `memory` / `disk` | `CPUs` / `MEMORY` / `DISK_SIZE` |
+| `autostart` | `false`: a bare `vagrant up` starts nothing |
+
+```bash
+vagrant status                 # every VM and its state
+vagrant up app-a               # creates or starts only app-a
+vagrant halt app-a             # stops it, keeps its disk
+vagrant ssh app-b              # or: ssh user@192.168.56.12
+vagrant destroy app-b          # deletes that VM and its disk
+```
+
+The host's RAM is shared by the running VMs: start the ones whose memory adds
+up to what the host can spare. Each VM gets its own `~/.ssh/config` entry
+(`HostName` = its `ip`).
+
+**Keeping an existing VM.** Vagrant identifies a VM by the folder
+`.vagrant/machines/<name>`. To keep the VM you already have as one of the
+named machines, give it its current IP and names in `MACHINES` and rename the
+folder while nothing runs a `vagrant` command:
+
+```bash
+mv .vagrant/machines/VM-UBUNTU-24-04-DEV-PROJECT .vagrant/machines/app-a
+vagrant status                 # app-a: running (or poweroff)
+```
+
+**Back to a single VM.** `vagrant destroy` the VMs you no longer want, remove
+`MACHINES` from `Vagrantfile.local` and rename the folder of the VM you keep
+back to its `VM_NAME`
+(`mv .vagrant/machines/app-a .vagrant/machines/VM-UBUNTU-24-04-DEV-PROJECT`).
+
 ## Customization (`Vagrantfile`)
 
 Variables at the top of the `Vagrantfile` (override per machine in a
@@ -103,7 +168,7 @@ gitignored `Vagrantfile.local`):
 | Variable | Default | Notes |
 | :--- | :--- | :--- |
 | `BOX_IMAGE` | `cloud-image/ubuntu-24.04` | Base box. Canonical stopped publishing `ubuntu/*` boxes after jammy; this is the cloud-image repack. |
-| `PROJECT` | `dev-project` | Label mixed into `VM_NAME`. |
+| `PROJECT` | `dev-project` | Label mixed into `VM_NAME` (the single VM; see [One VM per project](#one-vm-per-project) for several). |
 | `HOSTNAME` | `vm-<box distro>` | Guest hostname; override in `Vagrantfile.local` without changing `VM_NAME` or the existing VM identity. |
 | `VM_DISPLAY_NAME` | Vagrant default | Name shown in VirtualBox; override in `Vagrantfile.local` without changing the existing VM identity. |
 | `CPUs` / `MEMORY` | `2` / `8192` | Cores / RAM (MB). |
@@ -148,6 +213,20 @@ targets this sandbox from *everywhere*.) Re-`source` the rc file afterwards.
 Enforced by a global `commit-msg` hook (via `core.hooksPath`) managed in this
 maintainer's personal dotfiles, not tracked in this repo — no per-clone setup
 needed here.
+
+## Moving files to the VM
+
+`shared/` is a drop folder between the host and every VM: put a file there on
+the host and it shows up in the VM at `~/repos/vagrant-sandbox/shared` (through
+the `~/repos` share), and the other way around.
+
+The folder is versioned empty: everything inside it is gitignored, so nothing
+dropped there reaches this public repo. Clear it when the transfer is done.
+
+```bash
+cp ~/Downloads/report.pdf ~/repos/vagrant-sandbox/shared/   # on the host
+ls ~/repos/vagrant-sandbox/shared                            # in the VM
+```
 
 ## Repos & Git
 

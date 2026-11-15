@@ -115,29 +115,65 @@ else
   HOST_TERMINFO_PATH = nil
 end
 
+# ==============================================================================
+# 5.5 MACHINES (one VM, or one VM per project)
+# ==============================================================================
+# By default there is one VM, VM_NAME, configured by the constants above. To
+# keep one VM per project, each started and stopped on its own, define MACHINES
+# in Vagrantfile.local: the keys are the names used in commands
+# (`vagrant up <name>`), and every option falls back to the constants above.
+# See README "One VM per project".
+#
+#   MACHINES = {
+#     "app-a" => { ip: "192.168.56.11", memory: "4096" },
+#     "app-b" => { ip: "192.168.56.12", cpus: 4, hostname: "my-app-b" },
+#   }
+#
+# Options: ip, hostname, display_name, cpus, memory, disk, autostart.
+MACHINES = { VM_NAME => {} } unless defined?(MACHINES)
+MULTI_MACHINE = !(MACHINES.size == 1 && MACHINES.key?(VM_NAME))
+
+def machine_settings(name, opts)
+  unknown = opts.keys - %i[ip hostname display_name cpus memory disk autostart]
+  raise "MACHINES[#{name.inspect}]: unknown option(s) #{unknown.join(', ')}" unless unknown.empty?
+
+  {
+    ip:           opts.fetch(:ip, NETWORK_MODE == "public_static" ? VM_BRIDGED_IP : VM_PRIVATE_IP),
+    # Hostnames can't hold "_" or ".", the names often can
+    hostname:     opts.fetch(:hostname, MULTI_MACHINE ? name.downcase.gsub(/[^a-z0-9-]+/, "-") : HOSTNAME),
+    display_name: opts.fetch(:display_name, defined?(VM_DISPLAY_NAME) && !MULTI_MACHINE ? VM_DISPLAY_NAME : nil),
+    cpus:         opts.fetch(:cpus, CPUs),
+    memory:       opts.fetch(:memory, MEMORY).to_s,
+    disk:         opts.fetch(:disk, DISK_SIZE),
+    # With several VMs, a bare `vagrant up` starts none: name the one you want
+    autostart:    opts.fetch(:autostart, !MULTI_MACHINE),
+  }
+end
+
+MACHINE_SETTINGS = MACHINES.to_h { |name, opts| [name, machine_settings(name, opts)] }
+
+ips = MACHINE_SETTINGS.values.map { |m| m[:ip] }
+if NETWORK_MODE != "public_dhcp" && ips.uniq.size != ips.size
+  raise "Two machines share an IP (#{ips.tally.select { |_, n| n > 1 }.keys.join(', ')}): give each its own ip."
+end
+
 puts "=============================================================================="
 puts "Configurations set:"
 puts "  BOX_IMAGE:        #{BOX_IMAGE}"
-puts "  HOSTNAME:         #{HOSTNAME}"
-puts "  VM_NAME:          #{VM_NAME}"
 puts "  USERNAME:         #{USERNAME}"
 puts "  PASSWORD:         #{PASSWORD}"
-puts "  MEMORY:           #{MEMORY} MB"
-puts "  CPUs:             #{CPUs}"
-puts "  DISK_SIZE:        #{DISK_SIZE}"
 puts "  NETWORK_MODE:     #{NETWORK_MODE}"
-if NETWORK_MODE == "private"
-  puts "  VM_IP:            #{VM_PRIVATE_IP}"
-elsif NETWORK_MODE == "public_static"
-  puts "  VM_IP:            #{VM_BRIDGED_IP}"
-else
-  puts "  VM_IP:            DHCP (Dynamic)"
-end
 if NETWORK_MODE.start_with?("public")
   puts "  INTERFACE_PREFIX: #{NETWORK_INTERFACE_PREFIX}"
   puts "  GATEWAY_NETWORK:  #{GATEWAY_NETWORK}"
 end
+MACHINE_SETTINGS.each do |name, m|
+  ip = NETWORK_MODE == "public_dhcp" ? "DHCP (Dynamic)" : m[:ip]
+  puts "  #{name}: #{ip}, hostname #{m[:hostname]}, #{m[:cpus]} CPUs, #{m[:memory]} MB, disk #{m[:disk]}" \
+       "#{m[:autostart] ? '' : ', starts only by name'}"
+end
 puts "=============================================================================="
+
 
 # ==============================================================================
 # 6. VAGRANT CONFIGURATION
@@ -145,50 +181,55 @@ puts "==========================================================================
 Vagrant.configure("2") do |config|
   puts "Configuring Vagrant..."
 
-  config.vm.define VM_NAME do |host|
-    puts "Defining VM: #{VM_NAME}"
-    host.vm.box      = BOX_IMAGE
-    host.vm.hostname = HOSTNAME
-    host.vm.disk :disk, size: DISK_SIZE, primary: true
+  MACHINE_SETTINGS.each do |name, m|
+    config.vm.define name, autostart: m[:autostart] do |host|
+      puts "Defining VM: #{name}"
+      host.vm.box      = BOX_IMAGE
+      host.vm.hostname = m[:hostname]
+      host.vm.disk :disk, size: m[:disk], primary: true
 
-    # Share the host's ~/repos into the VM for repos cloned (and pushed) from the
-    # host via SSH. Git network access for these repos never happens inside the
-    # VM itself — only the resulting working tree is visible here.
-    #
-    # uid/gid=1000: placeholder only. Synced folders are mounted before the
-    # shell provisioner creates USERNAME, so owner:/group: can't be used
-    # (Vagrant would run `id -u` on a user that doesn't exist yet) and the
-    # real UID/GID can't be known here on the host. It also isn't reliably
-    # 1000 on the guest: official Canonical boxes already have "vagrant"
-    # (1000) and cloud-init's default "ubuntu" user (1001) before useradd
-    # ever runs, so USERNAME can land on 1002 or higher. The provisioner
-    # below detects the real UID/GID after creating USERNAME and remounts
-    # this share with the correct values.
-    host.vm.synced_folder "~/repos", "/home/#{USERNAME}/repos", create: true, mount_options: ["uid=1000", "gid=1000"]
+      # Share the host's ~/repos into the VM for repos cloned (and pushed) from the
+      # host via SSH. Git network access for these repos never happens inside the
+      # VM itself — only the resulting working tree is visible here.
+      #
+      # uid/gid=1000: placeholder only. Synced folders are mounted before the
+      # shell provisioner creates USERNAME, so owner:/group: can't be used
+      # (Vagrant would run `id -u` on a user that doesn't exist yet) and the
+      # real UID/GID can't be known here on the host. It also isn't reliably
+      # 1000 on the guest: official Canonical boxes already have "vagrant"
+      # (1000) and cloud-init's default "ubuntu" user (1001) before useradd
+      # ever runs, so USERNAME can land on 1002 or higher. The provisioner
+      # below detects the real UID/GID after creating USERNAME and remounts
+      # this share with the correct values.
+      host.vm.synced_folder "~/repos", "/home/#{USERNAME}/repos", create: true, mount_options: ["uid=1000", "gid=1000"]
 
-    # Apply network configuration based on mode
-    case NETWORK_MODE
-    when "private"
-      puts "Configuring private network (Host-Only) with IP: #{VM_PRIVATE_IP}"
-      host.vm.network "private_network", ip: VM_PRIVATE_IP
-    when "public_dhcp"
-      bridge_iface = detect_interface
-      puts "Configuring public network (Bridge) via DHCP on #{bridge_iface}..."
-      host.vm.network "public_network", type: "dhcp", bridge: bridge_iface
-    when "public_static"
-      bridge_iface = detect_interface
-      puts "Configuring public network (Bridge) via Static IP #{VM_BRIDGED_IP} on #{bridge_iface}..."
-      host.vm.network "public_network", ip: VM_BRIDGED_IP, bridge: bridge_iface
-    else
-      raise "Invalid NETWORK_MODE: '#{NETWORK_MODE}'. Choose 'private', 'public_static' or 'public_dhcp'."
+      # Apply network configuration based on mode
+      case NETWORK_MODE
+      when "private"
+        puts "Configuring private network (Host-Only) with IP: #{m[:ip]}"
+        host.vm.network "private_network", ip: m[:ip]
+      when "public_dhcp"
+        bridge_iface = detect_interface
+        puts "Configuring public network (Bridge) via DHCP on #{bridge_iface}..."
+        host.vm.network "public_network", type: "dhcp", bridge: bridge_iface
+      when "public_static"
+        bridge_iface = detect_interface
+        puts "Configuring public network (Bridge) via Static IP #{m[:ip]} on #{bridge_iface}..."
+        host.vm.network "public_network", ip: m[:ip], bridge: bridge_iface
+      else
+        raise "Invalid NETWORK_MODE: '#{NETWORK_MODE}'. Choose 'private', 'public_static' or 'public_dhcp'."
+      end
+
+      host.vm.provider "virtualbox" do |vb|
+        vb.name   = m[:display_name] if m[:display_name]
+        vb.memory = m[:memory]
+        vb.cpus   = m[:cpus]
+      end
     end
   end
 
-  # VirtualBox Provider Settings
+  # VirtualBox settings common to every machine
   config.vm.provider "virtualbox" do |vb|
-    vb.name   = VM_DISPLAY_NAME if defined?(VM_DISPLAY_NAME)
-    vb.memory = MEMORY
-    vb.cpus   = CPUs
     vb.customize ["modifyvm", :id, "--acpi", "on"]
     vb.customize ["modifyvm", :id, "--ioapic", "on"]
     # Resolve DNS via the host resolver so the VM follows the host VPN DNS
