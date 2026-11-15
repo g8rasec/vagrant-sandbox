@@ -10,7 +10,7 @@ across network environments (home, work, offline).
 * **SSH key injection** — host public key added to the VM for passwordless login.
 * **Host terminfo sync** — installs the host `$TERM` in the VM (fixes Ghostty etc.).
 * **Host DNS** — VM resolves through the host resolver (follows host VPN DNS).
-* **Dotfiles via chezmoi** — clones and applies `DOTFILES_REPO` on every boot.
+* **Dotfiles via chezmoi (optional)** — applies the host's dotfiles checkout (read-only share, no token) or clones `DOTFILES_REPO`.
 * **AI CLIs preinstalled** — Antigravity (`agy`), Claude Code (`claude`), Codex (`codex`).
 
 ## Prerequisites
@@ -44,27 +44,56 @@ public half is injected into the VM.
 > password prompt:
 > `chmod 700 ~/.ssh && chmod 600 ~/.ssh/id_ed25519 && chmod 644 ~/.ssh/id_ed25519.pub`
 
-**4. Dotfiles repo + read-only PAT** — mandatory; `vagrant up` refuses to run
-without them.
+**4. Dotfiles (optional)** — your [chezmoi](https://www.chezmoi.io/) dotfiles,
+applied on provisioning. Without them (or with `USE_DOTFILES = false` in
+`Vagrantfile.local`), the VM is a plain Ubuntu with the bootstrap packages and
+the AI CLIs: install what your project needs (Docker, Node...) yourself. To add
+them later, set `USE_DOTFILES = true` and run `vagrant provision <name>`. Two
+ways, the first preferred:
 
-1. A [chezmoi](https://www.chezmoi.io/)-compatible dotfiles repo on GitHub.
-2. Point `DOTFILES_REPO` at it in a gitignored `Vagrantfile.local`:
-   ```ruby
-   DOTFILES_REPO = "https://github.com/your-username/your-dotfiles.git"
-   ```
-3. A fine-grained PAT (**Contents: Read-only**, covers 1+ repos) saved plain:
-   ```bash
-   echo -n "your-token" > ~/.ssh/github_pat_readonly && chmod 600 ~/.ssh/github_pat_readonly
-   ```
-4. Verify it (expect `200`; `401` = bad token, `404` = no repo access):
-   ```bash
-   curl -s -o /dev/null -w "%{http_code}\n" \
-     -H "Authorization: Bearer $(tr -d '\n' < ~/.ssh/github_pat_readonly)" \
-     https://api.github.com/repos/your-username/your-dotfiles
-   ```
+```mermaid
+flowchart LR
+  H["Host: ~/.local/share/chezmoi<br/>(your dotfiles checkout)"] -- "read-only share<br/>/opt/dotfiles" --> V["VM: chezmoi init --apply"]
+  R["DOTFILES_REPO on GitHub"] -- "clone with a read-only PAT<br/>(only without the checkout)" --> V
+```
 
-This PAT also gives the VM read-only HTTPS access to GitHub for any in-VM
-`git clone`/`pull` — see [Repos & Git](#repos--git).
+* **From the host's checkout (no token).** If [chezmoi](https://www.chezmoi.io/)'s
+  source dir exists on the host (`DOTFILES_SOURCE`, default
+  `~/.local/share/chezmoi`, a git checkout), it is shared read-only into the VM
+  and linked as the VM's chezmoi source. Nothing is cloned and no GitHub
+  credential enters the VM. Get it once with `chezmoi init <your-dotfiles-repo>`
+  on the host. To update the VM's dotfiles: `git pull` in the checkout on the
+  host, then `vagrant provision <name>` (or `chezmoi apply` in the VM).
+* **Cloned inside the VM (needs a token).** Without the checkout, the VM clones
+  `DOTFILES_REPO` over HTTPS with a read-only PAT:
+  1. Point `DOTFILES_REPO` at it in a gitignored `Vagrantfile.local`:
+     ```ruby
+     DOTFILES_REPO = "https://github.com/your-username/your-dotfiles.git"
+     ```
+  2. A fine-grained PAT (**Contents: Read-only**; resource owner = the repo's
+     owner, so an organization's repo needs a token owned by that organization)
+     saved plain:
+     ```bash
+     read -rs T && printf '%s' "$T" > ~/.ssh/github_pat_readonly && chmod 600 ~/.ssh/github_pat_readonly; unset T
+     ```
+  3. Verify it (expect `200`; `401` = bad token, `404` = no repo access):
+     ```bash
+     curl -s -o /dev/null -w "%{http_code}\n" \
+       -H "Authorization: Bearer $(tr -d '\n' < ~/.ssh/github_pat_readonly)" \
+       https://api.github.com/repos/your-username/your-dotfiles
+     ```
+
+  With a PAT present (either way), the VM also gets read-only HTTPS access to
+  GitHub for in-VM `git clone`/`pull` — see [Repos & Git](#repos--git).
+
+Either way, provisioning turns on the VM user's systemd instance
+(`loginctl enable-linger`), as a login would, so dotfile scripts that enable
+user services (`systemctl --user`) work; user services then keep running after
+you log out of the VM.
+
+**Undo.** The VM only reads the checkout; `vagrant destroy <name>` leaves the
+host's dotfiles as they were. To stop sharing them, set `DOTFILES_SOURCE` to a
+path that does not exist (the VM then needs the PAT).
 
 ## Network modes (`NETWORK_MODE`)
 
@@ -141,6 +170,10 @@ vagrant ssh app-b              # or: ssh user@192.168.56.12
 vagrant destroy app-b          # deletes that VM and its disk
 ```
 
+A recreated VM has a new SSH host key, and `ssh` refuses it ("REMOTE HOST
+IDENTIFICATION HAS CHANGED"). Drop the old one after a `destroy`:
+`ssh-keygen -R 192.168.56.12` (its `ip`).
+
 The host's RAM is shared by the running VMs: start the ones whose memory adds
 up to what the host can spare. Each VM gets its own `~/.ssh/config` entry
 (`HostName` = its `ip`).
@@ -179,7 +212,9 @@ gitignored `Vagrantfile.local`):
 | `VM_BRIDGED_IP` | `192.168.15.10` | IP for `"public_static"` mode. |
 | `NETWORK_INTERFACE_PREFIX` | `en` | Host NIC prefix for Bridge (`wlp` = Wi-Fi). |
 | `DOTFILES_REPO` | placeholder | chezmoi dotfiles HTTPS URL. |
-| `VM_GIT_PAT_FILENAME` | `github_pat_readonly` | Host `~/.ssh` PAT file; required. |
+| `USE_DOTFILES` | `true` | `false` skips the dotfiles: a plain Ubuntu VM. |
+| `DOTFILES_SOURCE` | `~/.local/share/chezmoi` | Host dotfiles checkout, shared read-only; when present, no PAT is needed. |
+| `VM_GIT_PAT_FILENAME` | `github_pat_readonly` | Host `~/.ssh` PAT file; optional with the checkout, required without it. |
 
 ## Running `vagrant` from any directory
 
@@ -240,5 +275,7 @@ any covered repo works, but the copy dies with the VM and `push` is rejected.
 To push from inside anyway: forward your agent (`ssh -A vm-ubuntu`) and set the
 push URL to SSH (`git remote set-url --push origin git@github.com:you/repo.git`).
 
-`DOTFILES_REPO` (chezmoi) uses the PAT to clone/update on boot; its push URL is
-already SSH, so `ssh -A` + `git push` in `~/.local/share/chezmoi` just works.
+With the host's checkout, the VM's `~/.local/share/chezmoi` is a read-only
+link to it: commit and push dotfile changes on the host. When the VM cloned
+`DOTFILES_REPO` itself (PAT mode), its push URL is already SSH, so `ssh -A` +
+`git push` in `~/.local/share/chezmoi` just works.
