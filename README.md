@@ -15,18 +15,23 @@ across network environments (home, work, offline).
 
 ## Prerequisites
 
-**1. VirtualBox 7.1** ([Oracle apt repo](https://www.virtualbox.org/wiki/Linux_Downloads)):
+**1. VirtualBox 7.2** (Ubuntu's own package; Vagrant 2.4.9 supports up to 7.2):
 
 ```bash
-wget -O- https://www.virtualbox.org/download/oracle_vbox_2016.asc | sudo gpg --dearmor --yes --output /usr/share/keyrings/oracle-virtualbox-2016.gpg
-echo "deb [arch=amd64 signed-by=/usr/share/keyrings/oracle-virtualbox-2016.gpg] https://download.virtualbox.org/virtualbox/debian $(lsb_release -cs) contrib" | sudo tee /etc/apt/sources.list.d/virtualbox.list
-sudo apt update && sudo apt install virtualbox-7.1
+sudo apt update && sudo apt install virtualbox
+VBoxManage --version            # 7.2.x
 ```
 
-> **Secure Boot on?** `vboxdrv` won't load until its module-signing key is
-> enrolled: `sudo /sbin/vboxconfig`, then
-> `sudo mokutil --import /var/lib/shim-signed/mok/MOK.der` and reboot
-> (confirm the key in the blue MOK Manager screen).
+> **Secure Boot on?** The kernel module (`vboxdrv`) is built by DKMS and signed
+> with the machine's module-signing key. The first time, the install asks for a
+> one-time password to enroll that key: reboot and, in the blue MOK Manager
+> screen, choose *Enroll MOK* and type it. If `VBoxManage --version` warns the
+> driver isn't loaded, enroll it by hand:
+> `sudo mokutil --import /var/lib/shim-signed/mok/MOK.der`, then reboot.
+>
+> Oracle's own build (newer patch releases) is an alternative:
+> [Linux downloads](https://www.virtualbox.org/wiki/Linux_Downloads), package
+> `virtualbox-7.2`. Use one or the other, not both.
 
 **2. Vagrant** ([HashiCorp apt repo](https://developer.hashicorp.com/vagrant/install)):
 
@@ -124,6 +129,16 @@ Host vm-ubuntu
     StrictHostKeyChecking accept-new
 ```
 
+## Changing the box (e.g. a new Ubuntu LTS)
+
+`BOX_IMAGE` only applies when a VM is created. To move a VM to a new box:
+`vagrant destroy <name>` and `vagrant up <name>` (keep work in `~/repos`, which
+lives on the host). The single VM's default name carries the box
+(`VM-UBUNTU-26-04-<PROJECT>`): after a box change, Vagrant no longer finds the
+old one. Keep it with `BOX_IMAGE = "cloud-image/ubuntu-24.04"` in
+`Vagrantfile.local` until you recreate it, or destroy it first. Named machines
+(`MACHINES`) keep their names.
+
 ## One VM per project
 
 Projects that each need the same ports (an ingress on `443`, a Kubernetes
@@ -184,14 +199,14 @@ named machines, give it its current IP and names in `MACHINES` and rename the
 folder while nothing runs a `vagrant` command:
 
 ```bash
-mv .vagrant/machines/VM-UBUNTU-24-04-DEV-PROJECT .vagrant/machines/app-a
+mv .vagrant/machines/VM-UBUNTU-26-04-DEV-PROJECT .vagrant/machines/app-a
 vagrant status                 # app-a: running (or poweroff)
 ```
 
 **Back to a single VM.** `vagrant destroy` the VMs you no longer want, remove
 `MACHINES` from `Vagrantfile.local` and rename the folder of the VM you keep
 back to its `VM_NAME`
-(`mv .vagrant/machines/app-a .vagrant/machines/VM-UBUNTU-24-04-DEV-PROJECT`).
+(`mv .vagrant/machines/app-a .vagrant/machines/VM-UBUNTU-26-04-DEV-PROJECT`).
 
 ## Customization (`Vagrantfile`)
 
@@ -200,7 +215,7 @@ gitignored `Vagrantfile.local`):
 
 | Variable | Default | Notes |
 | :--- | :--- | :--- |
-| `BOX_IMAGE` | `cloud-image/ubuntu-24.04` | Base box. Canonical stopped publishing `ubuntu/*` boxes after jammy; this is the cloud-image repack. |
+| `BOX_IMAGE` | `cloud-image/ubuntu-26.04` | Base box (the current LTS). Canonical stopped publishing `ubuntu/*` boxes after jammy; this is the cloud-image repack. A VM keeps the box it was created with: a new default only applies to new VMs. |
 | `PROJECT` | `dev-project` | Label mixed into `VM_NAME` (the single VM; see [One VM per project](#one-vm-per-project) for several). |
 | `HOSTNAME` | `vm-<box distro>` | Guest hostname; override in `Vagrantfile.local` without changing `VM_NAME` or the existing VM identity. |
 | `VM_DISPLAY_NAME` | Vagrant default | Name shown in VirtualBox; override in `Vagrantfile.local` without changing the existing VM identity. |

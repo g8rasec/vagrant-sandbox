@@ -12,7 +12,7 @@ load "#{__dir__}/Vagrantfile.local" if File.exist?("#{__dir__}/Vagrantfile.local
 # ==============================================================================
 # 1. VM CONFIGURATION CONSTANTS
 # ==============================================================================
-BOX_IMAGE        = "cloud-image/ubuntu-24.04" unless defined?(BOX_IMAGE)
+BOX_IMAGE        = "cloud-image/ubuntu-26.04" unless defined?(BOX_IMAGE)
 PROJECT          = "dev-project" unless defined?(PROJECT)
 CPUs             = 2 unless defined?(CPUs)
 MEMORY           = "8192" unless defined?(MEMORY)
@@ -74,7 +74,7 @@ end
 # 4. LOAD STATE & LOG CONFIGURATION
 # ==============================================================================
 # Derive names from the box's distro token, not its org (boxes are now
-# "<org>/<distro>", e.g. "cloud-image/ubuntu-24.04"). Non-alnum -> "-".
+# "<org>/<distro>", e.g. "cloud-image/ubuntu-26.04"). Non-alnum -> "-".
 BOX_TAG   = BOX_IMAGE.split("/").last.gsub(/[^A-Za-z0-9]+/, "-")
 HOSTNAME  = "vm-" + BOX_TAG unless defined?(HOSTNAME)
 VM_NAME   = ("vm-" + BOX_TAG + "-" + PROJECT).upcase
@@ -272,7 +272,7 @@ Vagrant.configure("2") do |config|
       sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
       sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
     fi
-    sudo systemctl restart ssh    # 24.04 uses ssh.service (sshd is only an alias)
+    sudo systemctl restart ssh    # 24.04+ uses ssh.service (sshd is only an alias)
 
     # 2. Bootstrap Package Installation
     # Only what's strictly required before the user exists and dotfiles can
