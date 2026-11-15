@@ -22,6 +22,11 @@ SSH_KEY_FILENAME     = "id_ed25519" unless defined?(SSH_KEY_FILENAME)           
 VM_GIT_PAT_FILENAME  = "github_pat_readonly" unless defined?(VM_GIT_PAT_FILENAME) # host file with a read-only GitHub fine-grained PAT, for HTTPS Git access inside the VM
 DISK_SIZE            = "50GB" unless defined?(DISK_SIZE)
 DOTFILES_REPO        = "https://github.com/your-username/dotfiles.git" unless defined?(DOTFILES_REPO)
+# Dotfiles are optional: false skips them (a plain Ubuntu with the bootstrap packages and the AI CLIs).
+USE_DOTFILES         = true unless defined?(USE_DOTFILES)
+# Host checkout of the dotfiles (chezmoi's source dir). When it exists, the VM reads it through a read-only
+# share and needs no GitHub token; otherwise it clones DOTFILES_REPO with the read-only PAT.
+DOTFILES_SOURCE      = "~/.local/share/chezmoi" unless defined?(DOTFILES_SOURCE)
 
 # ==============================================================================
 # 2. NETWORK CONFIGURATION
@@ -77,10 +82,16 @@ VM_NAME   = ("vm-" + BOX_TAG + "-" + PROJECT).upcase
 VM_SSH_PUB_KEY  = read_ssh_key(SSH_KEY_FILENAME, true)
 VM_GIT_PAT      = read_ssh_key(VM_GIT_PAT_FILENAME, false)
 
-if VM_GIT_PAT.empty?
-  raise "Error: GitHub PAT not found at ~/.ssh/#{VM_GIT_PAT_FILENAME}. It's required to install and apply " \
-        "dotfiles (DOTFILES_REPO) via chezmoi on VM boot. See README Prerequisites for how to generate one."
-end
+DOTFILES_HOST_DIR = File.expand_path(DOTFILES_SOURCE)
+DOTFILES_FROM_HOST = USE_DOTFILES && File.directory?(File.join(DOTFILES_HOST_DIR, ".git"))
+DOTFILES_MOUNT = "/opt/dotfiles"
+# Without the host's checkout, the repo is cloned only if one is set and a PAT can read it.
+DOTFILES_CLONE = USE_DOTFILES && !DOTFILES_FROM_HOST && !VM_GIT_PAT.empty? && !DOTFILES_REPO.include?("your-username")
+DOTFILES_MODE = if DOTFILES_FROM_HOST then "host checkout (#{DOTFILES_SOURCE}, read-only)"
+                elsif DOTFILES_CLONE then "clone of #{DOTFILES_REPO} (PAT)"
+                elsif USE_DOTFILES then "none found: skipped (see README, Dotfiles)"
+                else "off (USE_DOTFILES = false)"
+                end
 
 # Push-capable SSH equivalent of DOTFILES_REPO, so the chezmoi source repo can be
 # pushed to from inside the VM (via `ssh -A`) without carrying the read-only PAT
@@ -163,6 +174,7 @@ puts "  BOX_IMAGE:        #{BOX_IMAGE}"
 puts "  USERNAME:         #{USERNAME}"
 puts "  PASSWORD:         #{PASSWORD}"
 puts "  NETWORK_MODE:     #{NETWORK_MODE}"
+puts "  DOTFILES:         #{DOTFILES_MODE}"
 if NETWORK_MODE.start_with?("public")
   puts "  INTERFACE_PREFIX: #{NETWORK_INTERFACE_PREFIX}"
   puts "  GATEWAY_NETWORK:  #{GATEWAY_NETWORK}"
@@ -202,6 +214,12 @@ Vagrant.configure("2") do |config|
       # below detects the real UID/GID after creating USERNAME and remounts
       # this share with the correct values.
       host.vm.synced_folder "~/repos", "/home/#{USERNAME}/repos", create: true, mount_options: ["uid=1000", "gid=1000"]
+
+    # The host's dotfiles checkout, read-only: chezmoi applies it without cloning (no token in the VM).
+    # Mounted outside the home, which does not exist yet; the provisioner links it into place.
+    if DOTFILES_FROM_HOST
+      host.vm.synced_folder DOTFILES_HOST_DIR, DOTFILES_MOUNT, mount_options: ["ro", "dmode=755", "fmode=644"]
+    end
 
       # Apply network configuration based on mode
       case NETWORK_MODE
@@ -315,51 +333,84 @@ Vagrant.configure("2") do |config|
       chown -R #{USERNAME}:#{USERNAME} /home/#{USERNAME}/.ssh
     fi
 
-    # Setup read-only GitHub PAT for #{USERNAME} (HTTPS, covers any repo the token grants read access to)
-    echo "Setting up read-only GitHub PAT for #{USERNAME}..."
-    sudo -u #{USERNAME} -i git config --global credential.helper store
-    echo "https://x-access-token:#{VM_GIT_PAT}@github.com" > /home/#{USERNAME}/.git-credentials
-    chown #{USERNAME}:#{USERNAME} /home/#{USERNAME}/.git-credentials
-    chmod 600 /home/#{USERNAME}/.git-credentials
-
-    # 5. Apply Dotfiles (chezmoi)
-    echo "Applying dotfiles via chezmoi..."
-
-    # Grant #{USERNAME} passwordless sudo only for this step: the dotfiles repo's
-    # run_once scripts call plain "sudo apt-get install" internally, and this whole
-    # provisioner runs non-interactively with no TTY, so sudo can't prompt for a
-    # password here. Revoked immediately after chezmoi finishes, below — every other
-    # step (AI CLI installs, interactive `vagrant ssh` sessions) never needs this.
-    echo "#{USERNAME} ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/90-#{USERNAME}-nopasswd > /dev/null
-    sudo chmod 440 /etc/sudoers.d/90-#{USERNAME}-nopasswd
-
-    # A previously failed clone (e.g. bad auth) can leave an incomplete, non-git source dir behind
-    if [ -d "/home/#{USERNAME}/.local/share/chezmoi" ] && [ ! -d "/home/#{USERNAME}/.local/share/chezmoi/.git" ]; then
-      echo "Removing incomplete chezmoi source directory from a previous failed attempt..."
-      rm -rf "/home/#{USERNAME}/.local/share/chezmoi"
-    fi
-
-    if [ -d "/home/#{USERNAME}/.local/share/chezmoi/.git" ]; then
-      echo "chezmoi source already present, pulling latest dotfiles..."
-      # --force: this runs with no TTY, so if a managed file (e.g. .zshrc) was
-      # touched outside chezmoi since the last apply — the AI CLI installers below
-      # append PATH lines to it — chezmoi would otherwise try to prompt on /dev/tty,
-      # fail to open it, and abort before running the run_once_after scripts. Since
-      # this VM is disposable/reproducible, the dotfiles state should always win.
-      sudo -u #{USERNAME} -i bash -c '~/.local/bin/chezmoi update --apply --force'
+    # Optional read-only GitHub PAT for #{USERNAME} (HTTPS, covers any repo the token grants read access to)
+    if [ -n "#{VM_GIT_PAT}" ]; then
+      echo "Setting up read-only GitHub PAT for #{USERNAME}..."
+      sudo -u #{USERNAME} -i git config --global credential.helper store
+      echo "https://x-access-token:#{VM_GIT_PAT}@github.com" > /home/#{USERNAME}/.git-credentials
+      chown #{USERNAME}:#{USERNAME} /home/#{USERNAME}/.git-credentials
+      chmod 600 /home/#{USERNAME}/.git-credentials
     else
-      echo "Installing chezmoi and applying #{DOTFILES_REPO}..."
-      sudo -u #{USERNAME} -i bash -c 'sh -c "$(curl -fsLS https://get.chezmoi.io)" -- -b ~/.local/bin init --apply #{DOTFILES_REPO}'
+      echo "No GitHub PAT on the host: in-VM git over HTTPS stays anonymous (clone on the host instead)."
     fi
 
-    # Point the chezmoi source repo's push URL at SSH instead of the read-only PAT's
-    # HTTPS remote, so a `git push` from inside the VM (e.g. over `ssh -A`) has
-    # somewhere to succeed, without ever making the read-only PAT itself push-capable.
-    sudo -u #{USERNAME} -i git -C /home/#{USERNAME}/.local/share/chezmoi remote set-url --push origin #{DOTFILES_REPO_SSH}
+    # 5. Apply Dotfiles (chezmoi), optional
+    if [ "#{DOTFILES_FROM_HOST || DOTFILES_CLONE}" != "true" ]; then
+      echo "Dotfiles: #{DOTFILES_MODE}."
+    else
+      echo "Applying dotfiles via chezmoi..."
 
-    # Revoke passwordless sudo now that chezmoi (and any apt installs it triggered) is done.
-    echo "Revoking passwordless sudo for #{USERNAME}..."
-    sudo rm -f /etc/sudoers.d/90-#{USERNAME}-nopasswd
+      # Grant #{USERNAME} passwordless sudo only for this step: the dotfiles repo's
+      # run_once scripts call plain "sudo apt-get install" internally, and this whole
+      # provisioner runs non-interactively with no TTY, so sudo can't prompt for a
+      # password here. Revoked immediately after chezmoi finishes, below — every other
+      # step (AI CLI installs, interactive `vagrant ssh` sessions) never needs this.
+      echo "#{USERNAME} ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/90-#{USERNAME}-nopasswd > /dev/null
+      sudo chmod 440 /etc/sudoers.d/90-#{USERNAME}-nopasswd
+
+      # The user's systemd instance, as after a login: dotfile scripts that enable user services
+      # (systemctl --user) need it, and provisioning runs without a login session.
+      sudo loginctl enable-linger #{USERNAME}
+      USER_UID=$(id -u #{USERNAME})
+      for _ in $(seq 1 30); do [ -S "/run/user/$USER_UID/bus" ] && break; sleep 1; done
+      USER_BUS="XDG_RUNTIME_DIR=/run/user/$USER_UID DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$USER_UID/bus"
+
+      CHEZMOI_SRC="/home/#{USERNAME}/.local/share/chezmoi"
+      if [ -d "#{DOTFILES_MOUNT}/.git" ]; then
+        # The host's checkout, shared read-only: link it as chezmoi's source dir and apply. Updates come from a
+        # `git pull` on the host, then `vagrant provision` (or `chezmoi apply` in the VM).
+        echo "Applying dotfiles from the host's checkout (#{DOTFILES_SOURCE}, read-only)..."
+        if [ -e "$CHEZMOI_SRC" ] && [ ! -L "$CHEZMOI_SRC" ]; then
+          echo "Moving aside a chezmoi source dir cloned inside the VM..."
+          mv "$CHEZMOI_SRC" "$CHEZMOI_SRC.cloned.$(date +%Y%m%d%H%M%S)"
+        fi
+        sudo -u #{USERNAME} mkdir -p "/home/#{USERNAME}/.local/share"
+        sudo -u #{USERNAME} ln -sfn "#{DOTFILES_MOUNT}" "$CHEZMOI_SRC"
+        if [ ! -x "/home/#{USERNAME}/.local/bin/chezmoi" ]; then
+          sudo -u #{USERNAME} -i bash -c 'sh -c "$(curl -fsLS https://get.chezmoi.io)" -- -b ~/.local/bin'
+        fi
+        # --force: this runs with no TTY (see below); the dotfiles state always wins on this disposable VM.
+        sudo -u #{USERNAME} -i env $USER_BUS bash -c '~/.local/bin/chezmoi init --apply --force'
+      else
+        # A previously failed clone (e.g. bad auth) can leave an incomplete, non-git source dir behind
+        if [ -d "$CHEZMOI_SRC" ] && [ ! -d "$CHEZMOI_SRC/.git" ]; then
+          echo "Removing incomplete chezmoi source directory from a previous failed attempt..."
+          rm -rf "$CHEZMOI_SRC"
+        fi
+
+        if [ -d "$CHEZMOI_SRC/.git" ]; then
+          echo "chezmoi source already present, pulling latest dotfiles..."
+          # --force: this runs with no TTY, so if a managed file (e.g. .zshrc) was
+          # touched outside chezmoi since the last apply — the AI CLI installers below
+          # append PATH lines to it — chezmoi would otherwise try to prompt on /dev/tty,
+          # fail to open it, and abort before running the run_once_after scripts. Since
+          # this VM is disposable/reproducible, the dotfiles state should always win.
+          sudo -u #{USERNAME} -i env $USER_BUS bash -c '~/.local/bin/chezmoi update --apply --force'
+        else
+          echo "Installing chezmoi and applying #{DOTFILES_REPO}..."
+          sudo -u #{USERNAME} -i env $USER_BUS bash -c 'sh -c "$(curl -fsLS https://get.chezmoi.io)" -- -b ~/.local/bin init --apply #{DOTFILES_REPO}'
+        fi
+
+        # Point the chezmoi source repo's push URL at SSH instead of the read-only PAT's
+        # HTTPS remote, so a `git push` from inside the VM (e.g. over `ssh -A`) has
+        # somewhere to succeed, without ever making the read-only PAT itself push-capable.
+        sudo -u #{USERNAME} -i git -C "$CHEZMOI_SRC" remote set-url --push origin #{DOTFILES_REPO_SSH}
+      fi
+
+      # Revoke passwordless sudo now that chezmoi (and any apt installs it triggered) is done.
+      echo "Revoking passwordless sudo for #{USERNAME}..."
+      sudo rm -f /etc/sudoers.d/90-#{USERNAME}-nopasswd
+    fi
 
     # 6. AI CLI Tools (VM-only, not part of dotfiles)
     if ! sudo -u #{USERNAME} -i command -v agy &>/dev/null; then
