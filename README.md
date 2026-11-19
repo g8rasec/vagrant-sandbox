@@ -108,6 +108,17 @@ path that does not exist (the VM then needs the PAT).
 | `"public_static"` | Bridge, static | `192.168.15.10` | Other LAN devices need to reach the VM. |
 | `"public_dhcp"` | Bridge, DHCP | from router | Public connection where IPs are dynamic. |
 
+## Apt mirror (`APT_MIRROR`)
+
+The guest's apt uses `http://br.archive.ubuntu.com/ubuntu` instead of the box
+default `archive.ubuntu.com`, which can be unreachable while country mirrors
+still answer (`security.ubuntu.com` is left as is). Set `APT_MIRROR` in
+`Vagrantfile.local` to another mirror, or to `""` to keep the box default.
+
+If the bootstrap packages fail to install, provisioning stops right there
+instead of going on with a user whose login shell (zsh) does not exist. Fix
+the mirror and run `vagrant provision <name>`.
+
 ## Getting started
 
 ```bash

@@ -27,6 +27,10 @@ USE_DOTFILES         = true unless defined?(USE_DOTFILES)
 # Host checkout of the dotfiles (chezmoi's source dir). When it exists, the VM reads it through a read-only
 # share and needs no GitHub token; otherwise it clones DOTFILES_REPO with the read-only PAT.
 DOTFILES_SOURCE      = "~/.local/share/chezmoi" unless defined?(DOTFILES_SOURCE)
+# Ubuntu archive mirror for the guest's apt. archive.ubuntu.com (the box default) can be
+# unreachable while country mirrors still answer; "" keeps the box default.
+# security.ubuntu.com is left as is.
+APT_MIRROR           = "http://br.archive.ubuntu.com/ubuntu" unless defined?(APT_MIRROR)
 
 # ==============================================================================
 # 2. NETWORK CONFIGURATION
@@ -175,6 +179,7 @@ puts "  USERNAME:         #{USERNAME}"
 puts "  PASSWORD:         #{PASSWORD}"
 puts "  NETWORK_MODE:     #{NETWORK_MODE}"
 puts "  DOTFILES:         #{DOTFILES_MODE}"
+puts "  APT_MIRROR:       #{APT_MIRROR.empty? ? "box default" : APT_MIRROR}"
 if NETWORK_MODE.start_with?("public")
   puts "  INTERFACE_PREFIX: #{NETWORK_INTERFACE_PREFIX}"
   puts "  GATEWAY_NETWORK:  #{GATEWAY_NETWORK}"
@@ -279,8 +284,18 @@ Vagrant.configure("2") do |config|
     # take over: zsh (login shell), curl+ca-certificates (fetch chezmoi
     # itself), ncurses-term (terminfo entries for common terminal emulators).
     # Everything else lives in the dotfiles repo's run_once scripts.
+    if [ -n "#{APT_MIRROR}" ] && [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+      echo "Using apt mirror #{APT_MIRROR}..."
+      sudo sed -i -E 's#^URIs: http://([a-z]+\\.)?archive\\.ubuntu\\.com/ubuntu/?$#URIs: #{APT_MIRROR}#' /etc/apt/sources.list.d/ubuntu.sources
+    fi
     echo "Installing bootstrap packages..."
-    sudo apt-get update && sudo apt-get install -y zsh curl ca-certificates ncurses-term
+    # Stop here if this fails: the user's login shell is zsh, and every later step
+    # runs as that user, so going on only piles up "zsh: command not found" errors.
+    if ! { sudo apt-get update && sudo apt-get install -y zsh curl ca-certificates ncurses-term; }; then
+      echo "ERROR: bootstrap packages failed to install (apt mirror unreachable?)." >&2
+      echo "Set APT_MIRROR in Vagrantfile.local to a reachable mirror and run: vagrant provision <name>" >&2
+      exit 1
+    fi
 
     # 3. User Creation
     if ! id #{USERNAME} &>/dev/null; then
